@@ -16,7 +16,8 @@ LOG_PATH = DATA_DIR / "order_log.csv"
 def load_catalog():
     df = pd.read_csv(CATALOG_PATH)
     df = df.dropna(subset=["item", "product_number"])
-    df["qty"] = 0
+    df["item"] = df["item"].astype(str)
+    df["product_number"] = df["product_number"].astype(str)
     return df.reset_index(drop=True)
 
 @st.cache_data
@@ -42,7 +43,7 @@ def send_email(order_df, orderer, timestamp):
     msg["Subject"] = f"📦 Supply Order from {orderer} at {timestamp}"
     msg["From"] = config["from"]
     msg["To"] = config["to"]
-    
+
     body = f"Order placed by: {orderer} on {timestamp}\n\n"
     body += order_df.to_string(index=False)
     msg.set_content(body)
@@ -63,7 +64,7 @@ catalog = load_catalog()
 people = load_people()
 log_df = load_log()
 
-# Persistent qty input
+# Persistent qty inputs
 if "quantities" not in st.session_state:
     st.session_state.quantities = {}
 
@@ -76,62 +77,49 @@ filtered = catalog.copy()
 if search:
     filtered = catalog[catalog["item"].str.contains(search, case=False, na=False)]
 
-# Display and input
-st.subheader("Select Quantities")
-for idx, row in filtered.iterrows():
-    key = f"{row['product_number']}_{idx}"
-    prev_qty = st.session_state.quantities.get(key, 0)
-    qty = st.number_input(
-        f"{row['item']} ({row['product_number']})",
-        min_value=0,
-        step=1,
-        value=prev_qty,
-        key=key
-    )
-    st.session_state.quantities[key] = qty
-
-# Button
-if st.button("📤 Log and Email Order"):
-    selected = []
-    for idx, row in catalog.iterrows():
-        key = f"{row['product_number']}_{idx}"
-        qty = st.session_state.quantities.get(key, 0)
+# Item list with quantity inputs
+st.subheader("🛒 Select Quantities")
+qty_input = []
+for i, row in filtered.iterrows():
+    item_key = f"{row['product_number']}_{i}"
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st.markdown(f"**{row['item']}** — `{row['product_number']}`")
+    with col2:
+        qty = st.number_input("Qty", min_value=0, step=1, value=st.session_state.quantities.get(item_key, 0), key=item_key)
         if qty > 0:
-            selected.append({
+            st.session_state.quantities[item_key] = qty
+            qty_input.append({
                 "item": row["item"],
                 "product_number": row["product_number"],
                 "qty": qty
             })
 
-    if not selected:
-        st.warning("No quantities selected.")
+# Submit button
+if st.button("📤 Log and Email Order"):
+    if not qty_input:
+        st.warning("Please enter quantities before logging.")
     else:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        order_df = pd.DataFrame(selected)
+        order_df = pd.DataFrame(qty_input)
         order_df["timestamp"] = timestamp
         order_df["orderer"] = orderer
-        order_df = order_df[["timestamp", "orderer", "item", "product_number", "qty"]]
-
-        # Save and email
-        save_log(order_df)
+        save_log(order_df[["timestamp", "orderer", "item", "product_number", "qty"]])
         send_email(order_df[["item", "product_number", "qty"]], orderer, timestamp)
 
-        # Show summary
+        # Show success + shopping list
         st.success("Order logged and emailed.")
         st.subheader("🧾 Copy/Paste Shopping List")
-        lines = [
-            f"{row['item']} — {row['product_number']} — Qty {row['qty']}"
-            for _, row in order_df.iterrows()
-        ]
+        lines = [f"{r['item']} — {r['product_number']} — Qty {r['qty']}" for r in qty_input]
         st.text_area("Shopping List", value="\n".join(lines), height=200)
         st.download_button(
-            label="⬇️ Download CSV",
-            data=order_df[["item", "product_number", "qty"]].to_csv(index=False).encode("utf-8"),
-            file_name=f"order_{timestamp.replace(':','-')}.csv",
+            "⬇️ Download CSV",
+            data=pd.DataFrame(qty_input)[["item", "product_number", "qty"]].to_csv(index=False).encode("utf-8"),
+            file_name=f"order_{timestamp.replace(':', '-')}.csv",
             mime="text/csv"
         )
 
-# View log
+# Order log
 if not log_df.empty:
     st.divider()
     st.subheader("📜 Past Orders")
